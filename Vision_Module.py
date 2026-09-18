@@ -1,70 +1,126 @@
 from __future__ import annotations
-import asyncio, inspect, time
+
+import asyncio
+import inspect
+import time
 from pathlib import Path
 from typing import Optional
+
 import config
+from Vexa_State import state
 from logger import log_event
+
 
 class VexaVision:
     def __init__(self):
-        self.model=None; self.tokenizer=None; self.last_description="Пока ничего не вижу."; self.last_path:Optional[str]=None; self.last_analyzed_at:Optional[float]=None; self._load_error:Optional[Exception]=None; self._lock=asyncio.Lock()
+        self.model = None
+        self.tokenizer = None
+        self.device = "cpu"
+        self.last_description = "Пока ничего не вижу."
+        self.last_path: Optional[str] = None
+        self.last_analyzed_at: Optional[float] = None
+        self._load_error: Optional[Exception] = None
+        self._lock = asyncio.Lock()
 
-    def _apply_compat_patch(self):
-        if not config.VISION_ENABLE_TRANSFORMERS_COMPAT_PATCH: return
+    def _apply_compat_patch(self) -> None:
+        if not config.VISION_ENABLE_TRANSFORMERS_COMPAT_PATCH:
+            return
         try:
             from transformers.modeling_attn_mask_utils import AttentionMaskConverter
-            method=AttentionMaskConverter._ignore_causal_mask_sdpa
-            if "is_training" not in inspect.signature(method).parameters:
-                original=method
-                @staticmethod
-                def patched(*args,**kwargs):
-                    kwargs.pop("is_training",None); return original(*args,**kwargs)
-                AttentionMaskConverter._ignore_causal_mask_sdpa=patched
-                log_event("EYES","Включён точечный transformers compatibility patch.")
-        except Exception as exc:
-            log_event("EYES",f"Compat patch пропущен: {exc}")
 
-    def _load_model_sync(self):
-        if self.model is not None or self._load_error is not None or not config.USE_VISION: return
+            original = AttentionMaskConverter._ignore_causal_mask_sdpa
+            params = inspect.signature(original).parameters
+            if "is_training" in params:
+                return
+
+            @staticmethod
+            def patched(*args, **kwargs):
+                kwargs.pop("is_training", None)
+                return original(*args, **kwargs)
+
+            AttentionMaskConverter._ignore_causal_mask_sdpa = patched
+            log_event("EYES", "Включён точечный transformers compatibility patch.")
+        except Exception as exc:
+            log_event("EYES", f"Compat patch пропущен: {exc}")
+
+    def _load_model_sync(self) -> None:
+        if self.model is not None or self._load_error is not None or not config.USE_VISION:
+            return
         try:
             import torch
-            from transformers import AutoModelForCausalLM,AutoTokenizer
-            self._apply_compat_patch()
-            device="cuda" if config.VISION_DEVICE=="auto" and torch.cuda.is_available() else ("cpu" if config.VISION_DEVICE=="auto" else config.VISION_DEVICE)
-            self.model=AutoModelForCausalLM.from_pretrained(config.VISION_MODEL_ID,trust_remote_code=True,revision=config.VISION_MODEL_REVISION).to(device)
-            self.tokenizer=AutoTokenizer.from_pretrained(config.VISION_MODEL_ID,revision=config.VISION_MODEL_REVISION)
-        except Exception as exc:
-            self._load_error=exc; log_event("EYES_ERR",f"Ошибка загрузки зрения: {exc}")
+            from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    def take_screenshot(self)->Optional[str]:
+            self._apply_compat_patch()
+            if config.VISION_DEVICE == "auto":
+                self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            else:
+                self.device = config.VISION_DEVICE
+            self.model = AutoModelForCausalLM.from_pretrained(
+                config.VISION_MODEL_ID,
+                trust_remote_code=True,
+                revision=config.VISION_MODEL_REVISION,
+            ).to(self.device)
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                config.VISION_MODEL_ID,
+                revision=config.VISION_MODEL_REVISION,
+            )
+            log_event("EYES", f"Vision model loaded on {self.device}.")
+        except Exception as exc:
+            self._load_error = exc
+            log_event("EYES_ERR", f"Ошибка загрузки зрения: {exc}")
+
+    def take_screenshot(self) -> Optional[str]:
         try:
             import pyautogui
-            config.VISION_DIR.mkdir(parents=True,exist_ok=True)
-            path=config.VISION_DIR/"last_view.png"
-            image=pyautogui.screenshot().convert("RGB")
-            if image.width>config.VISION_MAX_IMAGE_WIDTH:
-                ratio=config.VISION_MAX_IMAGE_WIDTH/image.width; image=image.resize((config.VISION_MAX_IMAGE_WIDTH,int(image.height*ratio)))
-            image.save(path); self.last_path=str(path); return str(path)
-        except Exception as exc:
-            log_event("EYES_ERR",f"Скриншот не получен: {exc}"); return None
 
-    def analyze_screen_sync(self,question:str="Describe the screen briefly.")->str:
+            config.VISION_DIR.mkdir(parents=True, exist_ok=True)
+            path = config.VISION_DIR / "last_view.png"
+            image = pyautogui.screenshot().convert("RGB")
+            if image.width > config.VISION_MAX_IMAGE_WIDTH:
+                ratio = config.VISION_MAX_IMAGE_WIDTH / image.width
+                image = image.resize((config.VISION_MAX_IMAGE_WIDTH, int(image.height * ratio)))
+            image.save(path)
+            self.last_path = str(path)
+            state.set_vision(self.last_description, str(path))
+            return str(path)
+        except Exception as exc:
+            log_event("EYES_ERR", f"Скриншот не получен: {exc}")
+            return None
+
+    def analyze_screen_sync(self, question: str | None = None) -> str:
         self._load_model_sync()
-        if self.model is None: return self.last_description
-        path=self.take_screenshot()
-        if not path: return self.last_description
+        if self.model is None:
+            return self.last_description
+        path = self.take_screenshot()
+        if not path:
+            return self.last_description
         try:
             from PIL import Image
             import torch
-            image=Image.open(path).convert("RGB")
-            embeds=self.model.encode_image(image).to(next(self.model.parameters()).device)
-            with torch.no_grad(): answer=self.model.answer_question(embeds,question,self.tokenizer)
-            self.last_description=str(answer).strip() or self.last_description; self.last_analyzed_at=time.time()
+
+            image = Image.open(path).convert("RGB")
+            embeds = self.model.encode_image(image)
+            with torch.no_grad():
+                answer = self.model.answer_question(embeds, question or config.VISION_PROMPT, self.tokenizer)
+            description = str(answer).strip()
+            if description:
+                self.last_description = description
+                self.last_analyzed_at = time.time()
+                state.set_vision(description, path)
         except Exception as exc:
-            log_event("EYES_ERR",f"Ошибка анализа: {exc}")
+            log_event("EYES_ERR", f"Ошибка анализа: {exc}")
         return self.last_description
 
-    async def analyze_screen(self,question:str="Describe the screen briefly.")->str:
-        async with self._lock: return await asyncio.to_thread(self.analyze_screen_sync,question)
+    async def analyze_screen(self, question: str | None = None) -> str:
+        async with self._lock:
+            return await asyncio.to_thread(self.analyze_screen_sync, question)
 
-vexa_eyes=VexaVision()
+    async def autonomous_loop(self) -> None:
+        if not config.USE_VISION:
+            return
+        while True:
+            await self.analyze_screen(config.VISION_PROMPT)
+            await asyncio.sleep(config.VISION_INTERVAL)
+
+
+vexa_eyes = VexaVision()

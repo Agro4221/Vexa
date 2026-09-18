@@ -17,3 +17,7 @@ pyvts==0.3.3
 ddgs==9.16.0
 aiohttp>=3.11,<4
 telethon>=1.40,<2
+google-api-python-client>=2.150,<3
+google-auth>=2.35,<3
+google-auth-oauthlib>=1.2,<2
+obsws-python>=1.8,<2
