@@ -135,7 +135,7 @@ SOCIAL_TELEGRAM_ENABLED = bool(TG_BOT_TOKEN and TG_BOT_CHAT_ID)
 AXELCHAT_SESSIONS_DIR = Path(
     os.getenv(
         "AXELCHAT_SESSIONS_DIR",
-        r"C:\Users\serg9\OneDrive\Документы\AxelChat\output\sessions",
+        r"C:Usersserg9OneDriveДокументыAxelChatoutputsessions",
     )
 )
 
