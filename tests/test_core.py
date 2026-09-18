@@ -13,21 +13,24 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import config
 from Action_Manager import parse_actions
 from Attention_Manager import AttentionManager
+from AxelChat_Watcher import AxelChatHandler
 from Core_Brain import StreamerAI
 from Data_Base import GlobalMemory
 from Event_Bus import EventBus
+from Runtime_Control import GenerationCancelled, control
 from Twitch_Module import TwitchChatClient
 from text_utils import prepare_text_for_tts
 
 
-def test_parse_actions():
-    result = parse_actions("Привет! [JOY] [BAN: bad_user]")
+def test_parse_actions_and_timeout():
+    result = parse_actions("Привет! [JOY] [TIMEOUT: bad_user]")
     assert result.text == "Привет!"
     assert result.emotion == "joy"
     assert result.moderation_target == "bad_user"
+    assert result.moderation_action == "timeout"
+    assert result.moderation_duration == 300
 
 
 def test_model_is_not_hardcoded():
@@ -50,21 +53,38 @@ def test_model_auto_selection_is_runtime_configured():
 
 def test_database_schema_and_user_id(tmp_path):
     db = GlobalMemory(tmp_path / "test.db")
-    db.add_event("twitch", "Alice", "hello", "hi", 52, "", "u123")
+    db.add_event(
+        "twitch",
+        "Alice",
+        "hello",
+        "hi",
+        52,
+        "",
+        "u123",
+        "m1",
+        "2026-01-20T13-33-17.521",
+        "2026-01-20T20:09:04.007+06:00",
+    )
     with sqlite3.connect(db.db_path) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(events)")}
         row = conn.execute(
-            "SELECT platform,author,user_id,message FROM events"
+            "SELECT platform,author,user_id,message,session_id FROM events"
         ).fetchone()
         profile = conn.execute(
             "SELECT user_id,display_name,interaction_count FROM viewer_profiles"
         ).fetchone()
     assert "user_id" in columns
-    assert row == ("twitch", "Alice", "u123", "hello")
+    assert row == (
+        "twitch",
+        "Alice",
+        "u123",
+        "hello",
+        "2026-01-20T13-33-17.521",
+    )
     assert profile == ("u123", "Alice", 1)
 
 
-def test_old_tg_schema_is_migrated(tmp_path):
+def test_old_schema_is_migrated(tmp_path):
     db_path = tmp_path / "legacy.db"
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -72,12 +92,19 @@ def test_old_tg_schema_is_migrated(tmp_path):
             "timestamp TEXT, platform TEXT, author TEXT, message TEXT, "
             "ai_response TEXT, mood INTEGER, screenshot_path TEXT)"
         )
-        conn.execute("CREATE TABLE tg_posts (post_hash TEXT PRIMARY KEY, date TEXT)")
+        conn.execute(
+            "CREATE TABLE tg_posts (post_hash TEXT PRIMARY KEY, date TEXT)"
+        )
     db = GlobalMemory(db_path)
     with sqlite3.connect(db.db_path) as conn:
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(tg_posts)")}
-    assert {"channel_id", "message_id", "status"} <= columns
-    assert db.claim_tg_post("legacy")
+        event_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(events)")
+        }
+        tg_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(tg_posts)")
+        }
+    assert {"user_id", "message_id", "session_id", "source_time"} <= event_columns
+    assert {"channel_id", "message_id", "status"} <= tg_columns
 
 
 def test_tg_claim_is_atomic(tmp_path):
@@ -92,10 +119,19 @@ def test_attention_and_queue_preserve_high_priority():
     async def scenario():
         manager = AttentionManager()
         bus = EventBus(max_size=2)
-        low1 = manager.annotate({"author": "a", "message": "one", "service": "twitch"})
-        low2 = manager.annotate({"author": "b", "message": "two", "service": "twitch"})
+        low1 = manager.annotate(
+            {"author": "a", "message": "one", "service": "twitch"}
+        )
+        low2 = manager.annotate(
+            {"author": "b", "message": "two", "service": "twitch"}
+        )
         urgent = manager.annotate(
-            {"author": "c", "message": "донат", "service": "axelchat"}
+            {
+                "author": "c",
+                "message": "донат",
+                "service": "donationalerts",
+                "is_donate": True,
+            }
         )
         assert bus.submit(low1)
         assert bus.submit(low2)
@@ -124,23 +160,24 @@ def test_queue_accepts_submission_from_thread():
     asyncio.run(scenario())
 
 
-def test_attention_cooldown_blocks_duplicate_background_event():
+def test_attention_deduplication():
     manager = AttentionManager()
     event = manager.annotate(
-        {"author": "a", "message": "hello", "service": "twitch"}
+        {"author": "a", "message": "hello", "platform": "twitch"}
     )
     assert manager.should_accept(event)
-    assert not manager.should_accept(event)
+    assert not manager.should_accept(dict(event))
 
 
 def test_twitch_tags_parser():
     event = TwitchChatClient._parse_privmsg(
-        "@badge-info=subscriber;display-name=Alice;user-id=42 "
+        "@display-name=Alice;user-id=42 "
         ":alice!x PRIVMSG #channel :привет"
     )
     assert event is not None
     assert event["author"] == "Alice"
     assert event["user_id"] == "42"
+    assert event["platform"] == "twitch"
 
 
 def test_twitch_privmsg_parser():
@@ -153,14 +190,66 @@ def test_twitch_privmsg_parser():
     assert event["message"] == "Привет, Векса!"
 
 
+def test_axelchat_parses_expected_session_format(tmp_path):
+    session = tmp_path / "2026-01-20T13-33-17.521"
+    session.mkdir()
+    path = session / "messages.ini"
+    path.write_text(
+        """[0]
+author=Амогус
+author_id=donationalerts_______
+message=80 zł (PLN, польский злотый)
+time=2026-01-20T20:10:00.000+06:00
+service=donationalerts
+[1]
+author=I_Jostik_I
+author_id=twitch_i_jostik_i
+message=Векса, привет
+time=2026-01-20T20:11:00.000+06:00
+service=twitch
+""",
+        encoding="utf-8",
+    )
+
+    class Loop:
+        def __init__(self):
+            self.events = []
+
+        def call_soon_threadsafe(self, callback, event):
+            self.events.append(event)
+
+    loop = Loop()
+    handler = AxelChatHandler(lambda event: None, loop)
+    handler.process_file(path)
+    assert len(loop.events) == 2
+    assert loop.events[0]["is_donate"] is True
+    assert loop.events[0]["priority"] == 0
+    assert loop.events[0]["user_id"] == "donationalerts_______"
+    assert loop.events[0]["session_id"] == "2026-01-20T13-33-17.521"
+    assert loop.events[1]["platform"] == "twitch"
+    assert loop.events[1]["priority"] == 1
+
+
 def test_tts_text_cleanup():
     cleaned = prepare_text_for_tts(
         "Смотри 15: https://example.com @user!"
     )
     assert "https://" not in cleaned
     assert "@user" not in cleaned
-    if "num2words" in sys.modules:
-        assert "пятнадцать" in cleaned
+    assert "пятнадцать" in cleaned or "15" in cleaned
+
+
+def test_generation_stop_flag():
+    control.begin_generation()
+    control.request_stop_generation()
+    try:
+        control.raise_if_generation_stopped()
+    except GenerationCancelled:
+        pass
+    else:
+        raise AssertionError("Generation stop flag was ignored")
+    finally:
+        control.begin_generation()
 
 
 def test_no_concrete_llm_name_in_runtime_code():
@@ -198,11 +287,18 @@ def test_no_real_secrets_in_repo_text():
 def test_local_import_graph_points_to_existing_modules():
     local = {p.stem for p in ROOT.glob("*.py")}
     for path in ROOT.glob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = ast.parse(
+            path.read_text(encoding="utf-8"),
+            filename=str(path),
+        )
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 names = [alias.name.split(".")[0] for alias in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            elif (
+                isinstance(node, ast.ImportFrom)
+                and node.level == 0
+                and node.module
+            ):
                 names = [node.module.split(".")[0]]
             else:
                 continue

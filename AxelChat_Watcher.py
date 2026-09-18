@@ -1,11 +1,15 @@
-from __future__
+from __future__ import annotations
 
 import configparser
+import re
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
 from logger import log_event
+
+_SESSION_RE = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?:\.\d+)?)")
 
 
 class AxelChatHandler:
@@ -41,6 +45,7 @@ class AxelChatHandler:
             log_event("CHAT_ERR", f"Не удалось прочитать {path}: {exc}")
             return
 
+        session_id = self._session_id(path)
         rows: list[tuple[int, dict[str, str]]] = []
         for section in parser.sections():
             try:
@@ -54,7 +59,9 @@ class AxelChatHandler:
                     idx,
                     {
                         "author": parser.get(section, "author", fallback="Anon").strip(),
+                        "author_id": parser.get(section, "author_id", fallback="").strip(),
                         "message": parser.get(section, "message", fallback="").strip(),
+                        "time": parser.get(section, "time", fallback="").strip(),
                         "service": parser.get(section, "service", fallback="unknown").strip(),
                     },
                 )
@@ -64,23 +71,96 @@ class AxelChatHandler:
             self._last_idx_by_file[key] = idx
             if not emit_existing:
                 continue
+
             message = data["message"]
             service = data["service"]
-            low = message.lower()
             service_low = service.lower()
+            low = message.lower()
             is_donate = "донат" in low or any(
-                x in service_low for x in ("donationalerts", "donatepay", "donate")
+                marker in service_low
+                for marker in ("donationalerts", "donatepay", "donate")
             )
-            priority = 0 if is_donate else 1 if any(
-                x in low for x in ("векса", "vexa", "мия", "мию")
-            ) else 3
+
+            if is_donate:
+                platform = "donation"
+                kind = "donation"
+            elif service_low in {"twitch", "twitch_chat"}:
+                platform = "twitch"
+                kind = "chat"
+            elif service_low in {"youtube", "youtube_chat"}:
+                platform = "youtube"
+                kind = "chat"
+            elif service_low in {"vk", "vkvideolive", "vkplay", "vk_video_live"}:
+                platform = "vk"
+                kind = "chat"
+            elif service_low in {"stream_elements", "streamelements", "vkvideolive_system"}:
+                platform = service_low
+                kind = "system"
+            else:
+                platform = service_low or "axelchat"
+                kind = "chat"
+
+            is_stream_start = any(
+                token in low
+                for token in (
+                    "is now live",
+                    "стрим запущен",
+                    "начал стрим",
+                    "началась трансляция",
+                )
+            )
+            is_stream_end = any(
+                token in low
+                for token in (
+                    "stream ended",
+                    "стрим завершен",
+                    "стрим закончился",
+                    "трансляция завершена",
+                )
+            )
+            if is_stream_start or is_stream_end:
+                kind = "system"
+
+            mention = any(x in low for x in ("векса", "vexa", "мия", "мию"))
+            priority = (
+                0
+                if is_donate
+                else 1
+                if mention or platform == "discord_voice"
+                else 3
+                if kind == "chat"
+                else 3
+            )
+
+            event_timestamp = self._event_timestamp(data["time"])
             payload = {
                 "priority": priority,
-                "timestamp": time.time(),
+                "timestamp": event_timestamp,
                 "author": data["author"] or "Anon",
+                "user_id": data["author_id"],
                 "message": message,
                 "service": service or "axelchat",
+                "platform": platform,
+                "kind": kind,
                 "is_donate": is_donate,
                 "message_id": str(idx),
+                "session_id": session_id,
+                "source_time": data["time"],
             }
             self.loop.call_soon_threadsafe(self.queue_submit, payload)
+
+    @staticmethod
+    def _session_id(path: Path) -> str:
+        for part in reversed(path.resolve().parts):
+            if _SESSION_RE.fullmatch(part):
+                return part
+        return ""
+
+    @staticmethod
+    def _event_timestamp(raw: str) -> float:
+        if not raw:
+            return time.time()
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return time.time()
