@@ -1,45 +1,39 @@
-import os
+from __future__ import annotations
 import requests
-from twitchapi import Twitch # pip install twitchapi
-from googleapiclient.discovery import build # pip install google-api-python-client
-from dotenv import load_dotenv
-
-load_dotenv()
+import config
+from logger import log_event
 
 class StreamManager:
     def __init__(self):
-        # 1. Твич (через библиотеку twitchapi)
-        self.twitch_id = os.getenv("TWITCH_CLIENT_ID")
-        self.twitch_secret = os.getenv("TWITCH_CLIENT_SECRET")
-        
-        # 2. YouTube (через Google API)
-        self.yt_key = os.getenv("YOUTUBE_API_KEY")
-        self.youtube = build('youtube', 'v3', developerKey=self.yt_key)
-        
-        # 3. VK Play (через прямые запросы к API)
-        self.vk_token = os.getenv("VK_SERVICE_KEY")
+        self.twitch_client_id=config.TWITCH_CLIENT_ID
+        self.twitch_token=config.TWITCH_TOKEN
+        self.twitch_channel=config.TWITCH_CHANNEL
 
-    # --- TWITCH: Смена названия и категории ---
-    async def update_twitch(self, title, category_name):
-        # Логика авторизации и отправки PATCH запроса в Twitch API
-        print(f"Twitch: Название изменено на '{title}'")
+    def _twitch_headers(self):
+        return {"Authorization":f"Bearer {self.twitch_token}","Client-Id":self.twitch_client_id}
 
-    # --- YOUTUBE: Смена названия трансляции ---
-    def update_youtube(self, video_id, title):
-        request = self.youtube.liveBroadcasts().update(
-            part="snippet",
-            body={"id": video_id, "snippet": {"title": title}}
-        )
-        request.execute()
+    def _twitch_get_broadcaster_id(self):
+        if not self.twitch_channel: raise RuntimeError("TWITCH_CHANNEL не задан")
+        r=requests.get("https://api.twitch.tv/helix/users",headers=self._twitch_headers(),params={"login":self.twitch_channel},timeout=10)
+        r.raise_for_status(); data=r.json().get("data",[])
+        if not data: raise RuntimeError(f"Twitch channel не найден: {self.twitch_channel}")
+        return str(data[0]["id"])
 
-    # --- VK PLAY: Модерация (Бан/Таймаут) ---
-    def vk_moderate(self, user_id, action="ban"):
-        url = f"https://api.vkplay.live{action}"
-        headers = {"Authorization": f"Bearer {self.vk_token}"}
-        # Отправка запроса на бан пользователя
-        pass
+    def update_twitch(self,title,category_name=None):
+        if not self.twitch_client_id or not self.twitch_token: return False
+        payload={"title":title}
+        if category_name:
+            r=requests.get("https://api.twitch.tv/helix/search/categories",headers=self._twitch_headers(),params={"query":category_name},timeout=10)
+            r.raise_for_status(); cats=r.json().get("data",[])
+            if cats: payload["game_id"]=str(cats[0]["id"])
+        r=requests.patch("https://api.twitch.tv/helix/channels",headers={**self._twitch_headers(),"Content-Type":"application/json"},params={"broadcaster_id":self._twitch_get_broadcaster_id()},json=payload,timeout=10)
+        r.raise_for_status(); log_event("TWITCH",f"Название обновлено: {title}"); return True
 
-    # --- ОБЩИЙ ОПРОС (Одинаковый во всех чатах) ---
-    async def create_global_poll(self, question, options):
-        print(f"Создаю опрос везде: {question} -> {options}")
-        # Вызов методов создания опроса для каждой платформы отдельно
+    def update_youtube(self,*args,**kwargs):
+        raise NotImplementedError("YouTube OAuth/liveBroadcast management пока не подключён.")
+
+    def vk_moderate(self,*args,**kwargs):
+        raise NotImplementedError("VK Play moderation API пока не подключён.")
+
+    async def create_global_poll(self,question,options):
+        log_event("STREAM",f"Global poll request: {question} -> {options}")
