@@ -1,32 +1,55 @@
 # Vexa
 
-> **RU:** Vexa — локальный AI-стример/виртуальный ведущий: LLM, память, голос, зрение и интеграции с Discord, Telegram, Twitch, YouTube, VK Play, OBS, VTube Studio и AxelChat.
+> **RU:** Vexa — проект автономной AI-стримерши / AI VTuber, которая должна не просто отвечать на сообщения, а воспринимать события, выбирать, на что обратить внимание, поддерживать контекст и самостоятельно действовать во время стрима.
 >
-> **EN:** Vexa is a local AI streamer runtime combining an LLM, memory, voice, vision and adapters for Discord, Telegram, Twitch, YouTube, VK Play, OBS, VTube Studio and AxelChat.
+> Изначальная идея Vexa была именно такой: **автономная нейростримерша**, а не Discord-ассистент. По замыслу проект находится в той же концептуальной области, что Овсянка (Grettach), Юна (NEBEYOND), Neuro-Sama (Vedal987) и Neurona (furrydev2007). Discord, Telegram, Twitch, YouTube и остальные платформы здесь — средства взаимодействия Vexa с внешним миром, а не конечная цель проекта.
+>
+> **EN:** Vexa is a project for an autonomous AI streamer / AI VTuber that is meant to do more than answer messages: it should perceive events, decide what deserves attention, keep context and act on its own during a stream.
+>
+> The original idea behind Vexa was exactly this: an **autonomous AI streamer**, not a Discord assistant. Conceptually, it belongs to the same space as projects such as Ovsjanka (Grettach), Yuna (NEBEYOND), Neuro-Sama (Vedal987) and Neurona (furrydev2007). Discord, Telegram, Twitch, YouTube and the other platforms are integrations that let Vexa interact with the outside world, not the project's end goal.
 
-> **🚧 Status / Статус:** Advanced prototype / продвинутый прототип. Основные части уже собраны, но полноценный запуск зависит от конкретного компьютера, моделей, внешних сервисов и live-проверок.
+> **🚧 Status / Статус:** Advanced prototype / продвинутый прототип. Архитектура автономного стримера уже собрана из отдельных подсистем, но полноценная работа как постоянно действующей нейростримерши всё ещё требует live-проверок, настройки моделей, внешних сервисов и дальнейшей стабилизации.
 
-## 🧠 Runtime concept / Идея
+## 🎭 Core idea / Главная идея
 
-Vexa is designed as a runtime system rather than a single chatbot script.
+The goal is to build Vexa as an autonomous streamer runtime rather than a conventional chatbot or platform bot.
+
+Главная идея — постепенно собрать систему, которая может:
+
+- получать события из чатов, голоса, экрана и подключённых сервисов;
+- решать, какие события важны прямо сейчас;
+- использовать память и текущее состояние для формирования контекста;
+- обращаться к LLM для генерации реакции;
+- превращать реакцию в речь, сообщение или другое действие;
+- работать как единый персонаж поверх нескольких платформ.
 
 ~~~mermaid
 flowchart LR
-    EV["Events"] --> AT["Attention"]
-    AT --> BUS["Event Bus"]
+    WORLD["Stream / Outside world"] --> EVENTS["Events"]
+    EVENTS --> ATT["Attention"]
+    ATT --> BUS["Event Bus"]
     BUS --> MEM["Memory / Context"]
     MEM --> BRAIN["Core Brain / LLM"]
     BRAIN --> ACT["Actions"]
-    ACT --> VOICE["TTS / Voice"]
-    ACT --> CHAT["Platform replies"]
-    ACT --> VTS["VTube Studio"]
 
-    SCREEN["Screen Vision"] --> MEM
+    ACT --> VOICE["TTS / Voice"]
+    ACT --> CHAT["Chat replies"]
+    ACT --> VTS["VTube Studio"]
+    ACT --> STREAM["Other stream controls"]
+
+    SCREEN["Screen Vision"] --> EVENTS
+    MIC["Microphone"] --> EVENTS
     STATE["Vexa State"] <--> BUS
     DB["SQLite"] <--> MEM
     SUP["Supervisor"] --> BUS
     SUP --> VOICE
 ~~~
+
+## 🧩 What Vexa is / Чем Vexa является
+
+**RU:** Vexa — это не «бот для Discord с AI». Discord является лишь одной из интеграций. Центральная часть проекта — runtime самой Vexa: события, внимание, память, LLM, состояние, голос, действия и контроль над подключёнными модулями.
+
+**EN:** Vexa is not an “AI Discord bot”. Discord is only one integration. The central part of the project is Vexa's own runtime: events, attention, memory, LLM reasoning, state, voice, actions and supervision of connected modules.
 
 ## 🏗️ Component map / Карта компонентов
 
@@ -60,7 +83,7 @@ graph TD
 
 | Subsystem | State | Notes |
 |---|---|---|
-| Core orchestration | ✅ | Modular runtime and supervised services |
+| Autonomous runtime architecture | ✅ | Core components are separated and orchestrated |
 | Event Bus | ✅ | Bounded priority event handling |
 | Attention | ✅ | Scheduling / prioritization |
 | Persistent memory | ✅ | SQLite-backed storage |
@@ -77,9 +100,9 @@ graph TD
 | Whisper STT | 🟡 | Lazy-loaded and configurable |
 | Silero TTS | 🟡 | External model required |
 | AxelChat | 🟡 | Depends on external messages.ini format |
-| Autonomy | 🟡 | Present, disabled by default |
+| Autonomy | 🟡 | Runtime support exists; autonomous behavior is still being developed |
 | AI moderation execution | 🟡 | Gated by application logic |
-| Full production runtime | ❌ | Requires assembled host + live credentials |
+| Full autonomous streamer runtime | ❌ | Requires assembled host + live integrations + long-running validation |
 
 ## 🔁 Example event flow / Пример обработки
 
