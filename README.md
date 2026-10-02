@@ -1,111 +1,210 @@
 # Vexa
 
-Vexa is a local AI streamer runtime that connects an LLM with voice I/O, optional screen vision, VTube Studio, Discord, Telegram, AxelChat, Twitch, YouTube, VK Play and OBS adapters.
+> **RU:** Vexa — локальный AI-стример/виртуальный ведущий: LLM, память, голос, зрение и интеграции с Discord, Telegram, Twitch, YouTube, VK Play, OBS, VTube Studio и AxelChat.
+>
+> **EN:** Vexa is a local AI streamer runtime combining an LLM, memory, voice, vision and adapters for Discord, Telegram, Twitch, YouTube, VK Play, OBS, VTube Studio and AxelChat.
 
-> Current state: advanced prototype / pre-release. Core orchestration, persistence, platform adapters, security filtering and CI are present, but live authorization and host-specific integration testing are still required.
+> **🚧 Status / Статус:** Advanced prototype / продвинутый прототип. Основные части уже собраны, но полноценный запуск зависит от конкретного компьютера, моделей, внешних сервисов и live-проверок.
 
-## Architecture
+## 🧠 Runtime concept / Идея
 
-The runtime is split into focused services:
+Vexa is designed as a runtime system rather than a single chatbot script.
 
-- main.py — orchestration
-- Event_Bus.py — bounded priority event queue
-- Attention_Manager.py — attention scheduling
-- Vexa_State.py — mutable runtime state
-- Core_Brain.py — LLM access and response handling
-- Memory_Core.py / Data_Base.py — persistent memory
-- Supervisor.py / Health_Check.py — service supervision and health
-- platform modules — Discord, Telegram, Twitch, YouTube, VK Play, OBS, VTube Studio
-- Vision_Module.py / ears.py / TTS_Manager.py — optional perception and speech pipeline
+~~~mermaid
+flowchart LR
+    EV["Events"] --> AT["Attention"]
+    AT --> BUS["Event Bus"]
+    BUS --> MEM["Memory / Context"]
+    MEM --> BRAIN["Core Brain / LLM"]
+    BRAIN --> ACT["Actions"]
+    ACT --> VOICE["TTS / Voice"]
+    ACT --> CHAT["Platform replies"]
+    ACT --> VTS["VTube Studio"]
 
-## What works
+    SCREEN["Screen Vision"] --> MEM
+    STATE["Vexa State"] <--> BUS
+    DB["SQLite"] <--> MEM
+    SUP["Supervisor"] --> BUS
+    SUP --> VOICE
+~~~
 
-| Area | State | Notes |
+## 🏗️ Component map / Карта компонентов
+
+~~~mermaid
+graph TD
+    MAIN["main.py"] --> BUS["Event_Bus.py"]
+    MAIN --> ATT["Attention_Manager.py"]
+    MAIN --> STATE["Vexa_State.py"]
+    MAIN --> BRAIN["Core_Brain.py"]
+    MAIN --> MEM["Memory_Core.py"]
+    MAIN --> SUP["Supervisor.py"]
+
+    BRAIN --> LLM["Ollama / LLM"]
+    MEM --> DB["Data_Base.py"]
+
+    MAIN --> DIS["Discord"]
+    MAIN --> TG["Telegram"]
+    MAIN --> TW["Twitch"]
+    MAIN --> YT["YouTube"]
+    MAIN --> VK["VK Play"]
+    MAIN --> OBS["OBS"]
+    MAIN --> VTS["VTube Studio"]
+
+    MAIN --> VISION["Vision"]
+    MAIN --> STT["Whisper STT"]
+    MAIN --> TTS["Silero TTS"]
+    MAIN --> AXEL["AxelChat"]
+~~~
+
+## 📊 Current state / Состояние
+
+| Subsystem | State | Notes |
 |---|---|---|
-| Core orchestration | ✅ | Modular startup and supervised background services |
-| Persistent memory | ✅ | SQLite runtime store and context retrieval |
-| LLM layer | ✅ | Model/provider selected through environment configuration |
-| Text cleanup / response handling | ✅ | Includes sensitive-data filtering |
-| Discord integration | 🟡 | Code and voice/chat paths are present; live credentials required |
-| Telegram integration | 🟡 | User-session and news paths are present; live authorization required |
-| Twitch integration | 🟡 | Chat/metadata adapter is implemented; live auth required |
-| YouTube integration | 🟡 | OAuth/live-chat/broadcast paths are implemented; live auth required |
-| VK Play | 🟡 | Configurable adapter; undocumented endpoints are not guessed |
-| OBS | 🟡 | Optional adapter; requires a real OBS instance |
-| VTube Studio | 🟡 | Optional adapter; requires a real VTS instance |
-| Screen vision | 🟡 | Lazy-loaded and configurable; hardware/model dependent |
+| Core orchestration | ✅ | Modular runtime and supervised services |
+| Event Bus | ✅ | Bounded priority event handling |
+| Attention | ✅ | Scheduling / prioritization |
+| Persistent memory | ✅ | SQLite-backed storage |
+| LLM layer | ✅ | Configurable provider/model |
+| Sensitive-data filtering | ✅ | Dedicated sanitization layer |
+| Discord | 🟡 | Integration exists; live auth required |
+| Telegram | 🟡 | User-session/news paths exist |
+| Twitch | 🟡 | Adapter exists; live auth required |
+| YouTube | 🟡 | OAuth/live paths exist |
+| VK Play | 🟡 | Configurable adapter |
+| OBS | 🟡 | Optional local integration |
+| VTube Studio | 🟡 | Optional local integration |
+| Screen vision | 🟡 | Model/hardware dependent |
 | Whisper STT | 🟡 | Lazy-loaded and configurable |
-| Silero TTS | 🟡 | Lazy-loaded; model binary kept outside Git |
-| AxelChat watcher | 🟡 | Depends on the external messages.ini format |
-| Autonomy | 🟡 | Feature exists but is disabled by default |
-| AI moderation execution | ❌ | Intentionally not executed directly from model output |
-| Full end-to-end production run | ❌ | Requires a real streaming machine and credentials |
+| Silero TTS | 🟡 | External model required |
+| AxelChat | 🟡 | Depends on external messages.ini format |
+| Autonomy | 🟡 | Present, disabled by default |
+| AI moderation execution | 🟡 | Gated by application logic |
+| Full production runtime | ❌ | Requires assembled host + live credentials |
 
-## Setup
+## 🔁 Example event flow / Пример обработки
+
+~~~mermaid
+sequenceDiagram
+    participant S as Source
+    participant E as Event Bus
+    participant A as Attention
+    participant M as Memory
+    participant L as LLM
+    participant X as Actions
+    participant T as TTS
+    participant P as Platform
+
+    S->>E: Message / event
+    E->>A: Queue
+    A->>M: Context request
+    M-->>A: Relevant memory
+    A->>L: Message + context
+    L-->>X: Response
+    X->>T: Clean text
+    T-->>P: Voice
+    X->>P: Reply / action
+    X->>M: Persist event
+~~~
+
+## 👁️ Vision + 🎙️ Audio
+
+~~~mermaid
+flowchart LR
+    MIC["Microphone"] --> STT["Whisper STT"]
+    STT --> E["Event Bus"]
+    E --> L["LLM"]
+    L --> CLEAN["Text cleanup"]
+    CLEAN --> TTS["Silero TTS"]
+    TTS --> OUT["Voice output"]
+
+    SCREEN["Desktop / window"] --> V["Vision"]
+    V --> E
+~~~
+
+## 🔌 Integrations / Интеграции
+
+**Discord:** chat, voice and optional voice receive.
+
+**Telegram:** user-session based news processing and publishing.
+
+**Twitch / YouTube / VK Play:** provider-specific adapters behind the common runtime.
+
+**OBS / VTube Studio:** optional local presentation/control integrations.
+
+**AxelChat:** watches external session files and converts incoming chat into runtime events.
+
+## 🔐 Security / Безопасность
+
+Vexa treats platform messages and web content as untrusted input.
+
+The project includes runtime-only credentials, sensitive-data filtering, explicit feature gates and separation between model output and application actions.
+
+The runtime does not blindly execute a model-generated moderation command.
+
+## 🧪 Verification / Проверка
+
+~~~mermaid
+flowchart LR
+    A["Compile / import"] --> B["Unit tests"]
+    B --> C["Secret hygiene"]
+    C --> D["Integration checks"]
+    D --> E["Live platform auth"]
+    E --> F["Soak / long-running"]
+~~~
+
+Automated tests cannot replace live authorization and host-specific testing.
+
+## ⚙️ Configuration / Конфигурация
 
 Create .env from .env.example.
 
-Install dependencies:
+The configuration covers LLM, STT/TTS, vision, Discord, Telegram, Twitch, YouTube, VK Play, OBS, VTube Studio, AxelChat, autonomy and moderation policies.
 
-~~~bash
-python -m pip install -r requirements.txt
+## 🗺️ Roadmap / План развития
+
+~~~mermaid
+flowchart LR
+    A["Advanced prototype"] --> B["More stable runtime"]
+    B --> C["Live integrations"]
+    C --> D["Recovery / reliability"]
+    D --> E["Long-running tests"]
+    E --> F["Stable release"]
 ~~~
 
-Optional local audio:
+## 🧑‍💻 About the author / Об авторе
 
-~~~bash
-python -m pip install -r requirements-local-audio.txt
+**RU:** Я пока новичок и учусь разработке прямо на Vexa. Это один из моих самых больших практических проектов: здесь я постепенно разбираюсь с Python, асинхронностью, API, LLM, базами данных, голосом, компьютерным зрением и архитектурой сложных приложений. Поэтому некоторые решения экспериментальные — и это нормально для текущего этапа проекта.
+
+**EN:** I am still a beginner developer and I am learning by building Vexa. It is one of my largest practical projects, combining Python, async programming, APIs, LLMs, databases, voice, computer vision and larger application architecture. Some parts are experimental, which is expected at this stage.
+
+## 📁 Important files / Основные файлы
+
+~~~text
+main.py                  # runtime orchestrator
+Event_Bus.py             # event queue
+Attention_Manager.py     # attention scheduling
+Vexa_State.py            # runtime state
+Core_Brain.py            # LLM layer
+Memory_Core.py           # contextual memory
+Data_Base.py             # persistence
+Supervisor.py            # service supervision
+Health_Check.py          # diagnostics
+
+Discord_Module.py        # Discord integration
+TG_Module.py             # Telegram integration
+Twitch_Module.py         # Twitch integration
+YouTube_Module.py        # YouTube integration
+VK_Module.py             # VK Play integration
+OBS_Module.py            # OBS integration
+VTS_Module.py            # VTube Studio
+Vision_Module.py         # screen vision
+TTS_Manager.py           # text-to-speech
+AxelChat_Watcher.py      # external chat watcher
+Sensitive_Data_Filter.py # secret filtering
 ~~~
 
-Run validation:
+---
 
-~~~bash
-python Health_Check.py
-python -m compileall -q .
-python -m pytest -q
-~~~
+**RU:** Vexa развивается вместе с моими навыками.
 
-Then start the runtime:
-
-~~~bash
-python main.py
-~~~
-
-## Configuration
-
-Credentials and deployment-specific values are environment variables. The public repository contains no real service tokens, OAuth secrets, Telegram channel IDs, runtime databases or user-specific filesystem paths.
-
-Important variables include:
-
-- Discord credentials
-- Telegram API/session settings
-- Twitch/YouTube/VK credentials
-- OBS/VTube Studio endpoints
-- LLM model/provider settings
-- vision/audio settings
-- AxelChat session directory
-
-The example file uses generic placeholders and local defaults.
-
-## Security
-
-Sensitive data is filtered before it is persisted or passed between components where the filter is applicable. Platform messages and web results are treated as untrusted context for the LLM.
-
-The runtime does not blindly execute a model-generated ban command. Moderation actions are gated by explicit application logic and configuration.
-
-Do not commit .env, OAuth token files, vts_token.txt, runtime databases, logs, sessions or model binaries.
-
-## Verification
-
-CI covers import integrity, tests and source hygiene. Live authorization against Discord, Twitch, YouTube, Telegram, VTube Studio and OBS is environment-dependent and must be validated on the actual host.
-
-## Known limitations
-
-- Some integrations require external applications/services.
-- Large voice/vision model binaries are intentionally outside Git.
-- Performance depends on the chosen local models and hardware.
-- A complete production deployment requires real credentials and live integration testing.
-
-## Public snapshot
-
-This repository contains the current refactor snapshot as a clean public source tree. Private runtime state, credentials and previous private Git history are not part of the public Git graph.
+**EN:** Vexa grows together with my skills.
