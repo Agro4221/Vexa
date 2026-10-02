@@ -1,68 +1,111 @@
 # Vexa
 
-Vexa is a local AI streamer runtime with configurable LLM access, voice I/O, optional screen vision, VTube Studio, Discord voice, Telegram, AxelChat, Twitch, YouTube, VK Play and OBS adapters.
+Vexa is a local AI streamer runtime that connects an LLM with voice I/O, optional screen vision, VTube Studio, Discord, Telegram, AxelChat, Twitch, YouTube, VK Play and OBS adapters.
 
-## LLM independence
-
-The chat LLM is deliberately model-agnostic. The code does not contain a named chat model. Set VEXA_MODEL to any compatible Ollama model, or leave it empty with OLLAMA_AUTO_SELECT_MODEL=true and let Vexa choose an installed model at runtime.
-
-Vision is separate and has its own configurable model settings through VISION_MODEL_ID and VISION_MODEL_REVISION.
+> Current state: advanced prototype / pre-release. Core orchestration, persistence, platform adapters, security filtering and CI are present, but live authorization and host-specific integration testing are still required.
 
 ## Architecture
 
-main.py is the runtime orchestrator. Event_Bus.py owns bounded priority events, Attention_Manager.py ranks attention, Vexa_State.py owns mutable runtime state, Core_Brain.py handles LLM requests, Memory_Core.py and Data_Base.py own persistent memory, Supervisor.py keeps background services alive, and platform modules isolate external services.
+The runtime is split into focused services:
+
+- main.py — orchestration
+- Event_Bus.py — bounded priority event queue
+- Attention_Manager.py — attention scheduling
+- Vexa_State.py — mutable runtime state
+- Core_Brain.py — LLM access and response handling
+- Memory_Core.py / Data_Base.py — persistent memory
+- Supervisor.py / Health_Check.py — service supervision and health
+- platform modules — Discord, Telegram, Twitch, YouTube, VK Play, OBS, VTube Studio
+- Vision_Module.py / ears.py / TTS_Manager.py — optional perception and speech pipeline
+
+## What works
+
+| Area | State | Notes |
+|---|---|---|
+| Core orchestration | ✅ | Modular startup and supervised background services |
+| Persistent memory | ✅ | SQLite runtime store and context retrieval |
+| LLM layer | ✅ | Model/provider selected through environment configuration |
+| Text cleanup / response handling | ✅ | Includes sensitive-data filtering |
+| Discord integration | 🟡 | Code and voice/chat paths are present; live credentials required |
+| Telegram integration | 🟡 | User-session and news paths are present; live authorization required |
+| Twitch integration | 🟡 | Chat/metadata adapter is implemented; live auth required |
+| YouTube integration | 🟡 | OAuth/live-chat/broadcast paths are implemented; live auth required |
+| VK Play | 🟡 | Configurable adapter; undocumented endpoints are not guessed |
+| OBS | 🟡 | Optional adapter; requires a real OBS instance |
+| VTube Studio | 🟡 | Optional adapter; requires a real VTS instance |
+| Screen vision | 🟡 | Lazy-loaded and configurable; hardware/model dependent |
+| Whisper STT | 🟡 | Lazy-loaded and configurable |
+| Silero TTS | 🟡 | Lazy-loaded; model binary kept outside Git |
+| AxelChat watcher | 🟡 | Depends on the external messages.ini format |
+| Autonomy | 🟡 | Feature exists but is disabled by default |
+| AI moderation execution | ❌ | Intentionally not executed directly from model output |
+| Full end-to-end production run | ❌ | Requires a real streaming machine and credentials |
 
 ## Setup
 
-Create a local .env from .env.example. Never commit real credentials, OAuth files, runtime databases, sessions or model binaries.
+Create .env from .env.example.
 
-Install production dependencies:
+Install dependencies:
 
-    python -m pip install -r requirements.txt
+~~~bash
+python -m pip install -r requirements.txt
+~~~
 
-Optional local microphone playback/recording:
+Optional local audio:
 
-    python -m pip install -r requirements-local-audio.txt
+~~~bash
+python -m pip install -r requirements-local-audio.txt
+~~~
 
-Start Ollama and install at least one chat model. Leave VEXA_MODEL empty for automatic selection, or set it explicitly for a particular deployment.
+Run validation:
 
-Install FFmpeg and run:
+~~~bash
+python Health_Check.py
+python -m compileall -q .
+python -m pytest -q
+~~~
 
-    python Health_Check.py
-    python -m compileall -q .
-    python -m pytest -q
-    python main.py
+Then start the runtime:
 
-## Integrations
+~~~bash
+python main.py
+~~~
 
-Discord uses discord-ext-voice-recv for voice receive and FFmpeg for playback.
+## Configuration
 
-Twitch uses a dependency-free TLS IRC client for live chat and the Helix API for channel metadata.
+Credentials and deployment-specific values are environment variables. The public repository contains no real service tokens, OAuth secrets, Telegram channel IDs, runtime databases or user-specific filesystem paths.
 
-YouTube uses OAuth 2.0 for Live Chat and broadcast management. The first authorization can open a local browser and stores its token under data/.
+Important variables include:
 
-Telegram news uses a Telethon user session. social.py is a separate Telegram Bot API sender.
+- Discord credentials
+- Telegram API/session settings
+- Twitch/YouTube/VK credentials
+- OBS/VTube Studio endpoints
+- LLM model/provider settings
+- vision/audio settings
+- AxelChat session directory
 
-VTube Studio and OBS are optional integrations controlled by their *_ENABLED settings. VK Play is a configurable adapter and intentionally does not invent undocumented endpoints.
-
-AxelChat watches messages.ini recursively and ignores old startup backlog by default.
-
-## Vision and audio
-
-Vision is lazy-loaded. On-demand analysis is triggered by chat/voice phrases and optional autonomous analysis is controlled with VISION_AUTONOMOUS=true and VISION_INTERVAL.
-
-Whisper is lazy-loaded and keeps the source project's useful hot-word and hallucination filters. Silero TTS is lazy-loaded, serialized for concurrent use and writes unique temporary WAV files.
-
-The supplied v5_ru.pt model is intentionally not stored in Git because it is a large binary. Put it at VOICE_MODEL_PATH or enable VOICE_AUTO_DOWNLOAD.
+The example file uses generic placeholders and local defaults.
 
 ## Security
 
-All service credentials are runtime configuration. AI moderation is a suggestion layer; the runtime does not execute a model-generated ban directly. Web results and platform messages are treated as untrusted context before reaching the LLM.
+Sensitive data is filtered before it is persisted or passed between components where the filter is applicable. Platform messages and web results are treated as untrusted context for the LLM.
 
-The repository is kept private during development and validation. Credentials shared during development should be rotated before real deployment.
+The runtime does not blindly execute a model-generated ban command. Moderation actions are gated by explicit application logic and configuration.
+
+Do not commit .env, OAuth token files, vts_token.txt, runtime databases, logs, sessions or model binaries.
 
 ## Verification
 
-The test suite covers model selection, queueing, migration, action parsing, Twitch parsing, text cleanup, secret hygiene and import integrity.
+CI covers import integrity, tests and source hygiene. Live authorization against Discord, Twitch, YouTube, Telegram, VTube Studio and OBS is environment-dependent and must be validated on the actual host.
 
-Live authorization against Discord, Twitch, YouTube, Telegram, VTube Studio and OBS is host-dependent and must be exercised on the actual streaming machine.
+## Known limitations
+
+- Some integrations require external applications/services.
+- Large voice/vision model binaries are intentionally outside Git.
+- Performance depends on the chosen local models and hardware.
+- A complete production deployment requires real credentials and live integration testing.
+
+## Public snapshot
+
+This repository contains the current refactor snapshot as a clean public source tree. Private runtime state, credentials and previous private Git history are not part of the public Git graph.
