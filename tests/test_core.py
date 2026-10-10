@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import ast
 import asyncio
+from contextlib import redirect_stdout
 import re
 import sqlite3
 import sys
 import threading
+from io import StringIO
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from Action_Manager import parse_actions
+from Health_Check import Check, main as health_check_main
 from Attention_Manager import AttentionManager
 from AxelChat_Watcher import AxelChatHandler
 from Core_Brain import StreamerAI
@@ -311,3 +314,68 @@ def test_all_runtime_modules_import_without_service_credentials():
     modules = [p.stem for p in ROOT.glob("*.py") if p.stem != "main"]
     for name in modules:
         __import__(name)
+
+def test_health_check_cli_prints_results_and_exit_code():
+    checks = [
+        Check("LLM provider", True, "provider=ollama", True),
+        Check("Discord config", False, "disabled", False),
+        Check("TTS model", False, "model is missing", True),
+    ]
+    output = StringIO()
+    with patch("Health_Check.run_checks", return_value=checks), redirect_stdout(output):
+        exit_code = health_check_main()
+
+    report = output.getvalue()
+    assert exit_code == 1
+    assert "[OK] LLM provider: provider=ollama" in report
+    assert "[WARN] Discord config: disabled" in report
+    assert "[FAIL] TTS model: model is missing" in report
+    assert "1 warning(s)" in report
+    assert "1 critical failure(s)" in report
+    assert "NOT READY" in report
+
+
+def test_event_bus_rejects_invalid_metadata_and_handles_legacy_priority():
+    bus = EventBus(max_size=2)
+    assert not bus.submit({"timestamp": "not-a-time", "ttl": 10, "message": "bad"})
+    assert not bus.submit(
+        {"timestamp": time.time() - 100, "ttl": 1, "message": "expired"}
+    )
+    assert bus.submit(
+        {"timestamp": time.time(), "ttl": 10, "priority": None, "message": "legacy"}
+    )
+    assert bus.qsize() == 1
+
+def test_ollama_health_check_reports_unreachable_service():
+    from Health_Check import _check_ollama
+
+    with (
+        patch("Health_Check.config.LLM_PROVIDER", "ollama"),
+        patch("Health_Check.config.OLLAMA_URL", "http://127.0.0.1:11434"),
+        patch("requests.get", side_effect=ConnectionError("offline")),
+    ):
+        checks = _check_ollama()
+
+    assert len(checks) == 2
+    assert not checks[0].ok
+    assert checks[0].name == "Ollama API"
+    assert not checks[1].ok
+    assert "not checked" in checks[1].detail
+
+
+def test_ollama_health_check_accepts_configured_latest_model():
+    from Health_Check import _check_ollama
+
+    with (
+        patch("Health_Check.config.LLM_PROVIDER", "ollama"),
+        patch("Health_Check.config.OLLAMA_URL", "http://127.0.0.1:11434"),
+        patch("Health_Check.config.LLM_MODEL", "qwen2.5"),
+        patch("requests.get") as mocked,
+    ):
+        mocked.return_value.raise_for_status.return_value = None
+        mocked.return_value.json.return_value = {
+            "models": [{"name": "qwen2.5:latest"}]
+        }
+        checks = _check_ollama()
+
+    assert all(check.ok for check in checks)

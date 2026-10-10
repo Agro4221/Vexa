@@ -20,6 +20,15 @@ def _sink_listener():
     def decorator(fn): return fn
     return decorator
 
+
+def _command(*args, **kwargs):
+    """Allow importing the module when the optional Discord dependency is absent."""
+    if commands is None:
+        def decorator(fn):
+            return fn
+        return decorator
+    return commands.command(*args, **kwargs)
+
 if commands is not None:
     intents=discord.Intents.default()
     intents.message_content=True; intents.voice_states=True
@@ -57,7 +66,7 @@ class VexaVoice(commands.Cog if commands is not None else object):
     def set_event_callback(self,callback): self.event_callback=callback
     def update_mood(self,change:int)->int:
         self.mood=max(0,min(100,self.mood+int(change))); log_event("MOOD",f"Новое настроение: {self.mood}"); return self.mood
-    @commands.command(name="зайди")
+    @_command(name="зайди")
     async def join(self,ctx):
         if not ctx.author.voice or not ctx.author.voice.channel:
             await ctx.send("⚠️ Зайди в голосовой канал, чтобы я могла тебя слышать."); return
@@ -69,12 +78,12 @@ class VexaVoice(commands.Cog if commands is not None else object):
             vc=await channel.connect(cls=voice_recv.VoiceRecvClient) if voice_recv is not None else await channel.connect()
         await ctx.send(f"✅ Векса в канале: **{channel.name}**.")
         if config.DISCORD_RECEIVE_VOICE and voice_recv is not None: await self._start_receiving(vc,ctx.guild.id)
-    @commands.command(name="слушай")
+    @_command(name="слушай")
     async def listen(self,ctx):
         if not ctx.voice_client: await ctx.send("Я не в голосовом канале."); return
         if voice_recv is None: await ctx.send("Для приёма Discord-аудио нужен discord-ext-voice-recv."); return
         await self._start_receiving(ctx.voice_client,ctx.guild.id); await ctx.send("👂 Слушаю голос.")
-    @commands.command(name="перестаньслушать")
+    @_command(name="перестаньслушать")
     async def stop_listening(self,ctx):
         sink=self.sinks.pop(getattr(ctx.guild,"id",0),None)
         if ctx.voice_client and voice_recv is not None:
@@ -82,7 +91,7 @@ class VexaVoice(commands.Cog if commands is not None else object):
             except Exception: pass
         if sink: sink.cleanup()
         await ctx.send("👂 Слух отключён.")
-    @commands.command(name="выйди",aliases=["ливни","исчезни"])
+    @_command(name="выйди",aliases=["ливни","исчезни"])
     async def leave(self,ctx):
         gid=getattr(ctx.guild,"id",0); sink=self.sinks.pop(gid,None)
         if sink: sink.cleanup()
