@@ -1,5 +1,4 @@
-from __future__
-
+from __future__ import annotations
 import asyncio
 import heapq
 import threading
@@ -24,22 +23,35 @@ class EventBus:
     """Thread-safe bounded priority queue usable from sync callbacks and asyncio."""
 
     def __init__(self, max_size: int | None = None) -> None:
-        self.max_size = max_size or config.QUEUE_MAX_SIZE
+        self.max_size = max(1, max_size or config.QUEUE_MAX_SIZE)
         self._heap: list[_QueuedEvent] = []
         self._sequence = 0
         self._lock = threading.Lock()
 
     def submit(self, event: dict[str, Any]) -> bool:
         now = time.time()
-        timestamp = float(event.get("timestamp", now))
-        ttl = float(event.get("ttl", config.QUEUE_NORMAL_TTL))
-        if now - timestamp > ttl:
+        try:
+            timestamp = float(event.get("timestamp", now))
+            ttl = float(event.get("ttl", config.QUEUE_NORMAL_TTL))
+        except (TypeError, ValueError, OverflowError):
+            log_event("QUEUE", "Событие отброшено: некорректные timestamp/ttl.")
             return False
+
+        if not (0 < ttl < float("inf")) or not (0 < timestamp < float("inf")):
+            return False
+        if timestamp > now + 60 or now - timestamp > ttl:
+            return False
+
+        raw_priority = event.get("priority", 3)
+        try:
+            priority = 3 if raw_priority is None else int(raw_priority)
+        except (TypeError, ValueError, OverflowError):
+            priority = 3
 
         with self._lock:
             self._sequence += 1
             item = _QueuedEvent(
-                priority=max(0, min(3, int(event.get("priority", 3)))),
+                priority=max(0, min(3, priority)),
                 sequence=self._sequence,
                 timestamp=timestamp,
                 ttl=ttl,

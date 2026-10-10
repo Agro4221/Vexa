@@ -77,10 +77,7 @@ class VexaMemory:
                     f"Ты ответила: «{response}»."
                 )
             return (
-                "
---- ВОСПОМИНАНИЯ ---
-" + "
-".join(fragments)
+                "\n--- ВОСПОМИНАНИЯ ---\n" + "\n".join(fragments)
                 if fragments
                 else ""
             )

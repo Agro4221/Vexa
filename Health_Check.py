@@ -15,8 +15,90 @@ class Check:
     critical: bool = False
 
 
+def _check_ollama() -> list[Check]:
+    """Verify that the configured local LLM service and model are actually usable."""
+    if config.LLM_PROVIDER != "ollama":
+        return []
+
+    try:
+        import requests
+
+        response = requests.get(
+            f"{config.OLLAMA_URL}/api/tags",
+            timeout=3,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        items = payload.get("models", []) if isinstance(payload, dict) else []
+        names = [
+            str(item.get("name", "")).strip()
+            for item in items
+            if isinstance(item, dict) and item.get("name")
+        ]
+    except Exception as exc:
+        return [
+            Check(
+                "Ollama API",
+                False,
+                f"unreachable ({type(exc).__name__}); start Ollama and verify OLLAMA_URL",
+                True,
+            ),
+            Check(
+                "Ollama model availability",
+                False,
+                "not checked because the API is unavailable",
+                True,
+            ),
+        ]
+
+    api_check = Check(
+        "Ollama API",
+        True,
+        "reachable",
+        True,
+    )
+    if not names:
+        model_check = Check(
+            "Ollama model availability",
+            False,
+            "no models installed; use 'ollama pull <model>'",
+            True,
+        )
+    elif config.LLM_MODEL:
+        requested = config.LLM_MODEL.strip().lower()
+        found = any(
+            name.lower() == requested
+            or (":" not in requested and name.lower().startswith(requested + ":"))
+            for name in names
+        )
+        model_check = Check(
+            "Ollama model availability",
+            found,
+            "configured model is installed"
+            if found
+            else f"configured model '{config.LLM_MODEL}' not found; check VEXA_MODEL",
+            True,
+        )
+    elif not config.OLLAMA_AUTO_SELECT_MODEL:
+        model_check = Check(
+            "Ollama model availability",
+            False,
+            "set VEXA_MODEL or enable OLLAMA_AUTO_SELECT_MODEL",
+            True,
+        )
+    else:
+        model_check = Check(
+            "Ollama model availability",
+            True,
+            f"{len(names)} installed model(s); runtime auto-selection is enabled",
+            True,
+        )
+
+    return [api_check, model_check]
+
+
 def run_checks() -> list[Check]:
-    checks = [
+    checks = _check_ollama() + [
         Check(
             "LLM provider",
             config.LLM_PROVIDER == "ollama",
@@ -133,15 +215,41 @@ def run_checks() -> list[Check]:
     return checks
 
 
-def main() -> int:
-    return (
-        1
-        if any(
-            (not check.ok) and check.critical
-            for check in run_checks()
-        )
-        else 0
+def format_report(checks: list[Check]) -> str:
+    """Format diagnostics for terminal use without exposing secret values."""
+    lines = ["Vexa Health Check", "=" * 18]
+    passed = 0
+    warnings = 0
+    critical_failures = 0
+
+    for check in checks:
+        if check.ok:
+            status = "OK"
+            passed += 1
+        elif check.critical:
+            status = "FAIL"
+            critical_failures += 1
+        else:
+            status = "WARN"
+            warnings += 1
+        lines.append(f"[{status}] {check.name}: {check.detail}")
+
+    lines.append("")
+    lines.append(
+        f"Summary: {passed}/{len(checks)} passed; "
+        f"{warnings} warning(s); {critical_failures} critical failure(s)."
     )
+    if critical_failures:
+        lines.append("Result: NOT READY — fix critical failures before starting.")
+    else:
+        lines.append("Result: READY TO START — review warnings for optional features.")
+    return "\n".join(lines)
+
+
+def main() -> int:
+    checks = run_checks()
+    print(format_report(checks))
+    return int(any(not check.ok and check.critical for check in checks))
 
 
 if __name__ == "__main__":

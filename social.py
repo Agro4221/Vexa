@@ -1,8 +1,6 @@
-from __future__
-
+from __future__ import annotations
 from html import escape
 
-import aiohttp
 
 import config
 from logger import log_event
@@ -22,6 +20,9 @@ async def post_to_telegram(text: str, chat_id: str | None = None) -> bool:
         "parse_mode": "HTML",
     }
     try:
+        # Keep this integration optional for environments that only import core modules.
+        import aiohttp
+
         timeout = aiohttp.ClientTimeout(total=15)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(url, json=payload) as response:
